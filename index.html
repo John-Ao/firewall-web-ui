@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>防火墙控制器</title>
+    <!-- <script src="https://unpkg.com/vue"></script> -->
+    <script src="vue.js"></script>
+    <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+
+<body>
+    <div id="app">
+        <div class="modal" v-show="show_form">
+            <div class="modal-content">
+                <span class="close" @click="show_form=false">&times;</span>
+                <form>
+                    <h2>输入规则</h2>
+                    <div v-for="(k,i) of keys_name" class="form-item">
+                        <div class="form-item-label"><label>{{k+(i==0?'(不可修改)':'')}}：</label></div>
+                        <div class="form-item-input">
+                            <input :disabled="i==0" :placeholder="form_defaults[i]" v-model="form[keys_send[i]]">
+                        </div>
+                    </div>
+                    <div class="form-item">
+                        <div class="form-item-label"></div>
+                        <div class="form-item-input">
+                            <button class="form-btn btn" @click.prevent="submit">确定</button>
+                            <span class="form-status">{{form_status}}</span>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <div class="outer">
+            <div class="inner">
+                <h1>My Firewall Control Panel</h1>
+                <div>
+                    <p style="display:inline-block">Server&nbsp;</p>
+                    <input v-model="server_ip" placeholder="IP">
+                    <span>:</span>
+                    <input v-model="server_port" placeholder="Port">
+                    <button @click="connect">Refresh rule list</button>
+                    <p class="status">Info: {{status}}</p>
+                </div>
+                <div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th v-for="(k,i) of keys_name" :key="i" @click="sortbyrow(i)">
+                                    {{k}}
+                                    <span class="sorter" v-if="sortby==i">{{sortby_order?'▲':'▼'}}</span>
+                                    <span class="sorter" v-else>&nbsp;</span>
+                                </th>
+                                <th>选项</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="(rv,i) of rule_values" :key="rv[0]">
+                                <td v-for="v of rv">{{v}}</td>
+                                <td>
+                                    <div class="control">
+                                        <div><button class="btn btn-modify" @click.prevent="rule_modify(i)">修改</button>
+                                        </div>
+                                        <div><button class="btn btn-delete" @click.prevent="rule_delete(i)">删除</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr v-if="rule_values.length==0">
+                                <td :colspan="keys_recv.length+1">No rules</td>
+                            </tr>
+                            <tr>
+                                <td :colspan="keys_recv.length+1" class="add" @click="rule_add">+</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let app = new Vue({
+            el: '#app',
+            data: {
+                server_ip: '',
+                server_port: '',
+                status: 'Not connected',
+                sortby: 0,
+                sortby_order: true,
+                show_form: false,
+                form_status: '',
+                keys_send: ["ruleid", "switchid", "src-inport", "src-mac", "dst-mac", "src-ip", "dst-ip", "tp-src", "tp-dst", "proto", "priority", "action"],
+                keys_recv: ["ruleid", "dpid", "in_port", "dl_src", "dl_dst", "nw_src", "nw_dst", "tp_src", "tp_dst", "proto", "priority", "action"],
+                keys_name: ["编号", "Switch ID", "Switch端口", "源MAC", "目的MAC", "源IP", "目的IP", "源端口", "目的端口", "协议", "优先级", "操作"],
+                form: {},
+                form_defaults: ["", "0", "0", "00:00:00:00:00:00:00:00", "00:00:00:00:00:00:00:00", "0.0.0.0", "0.0.0.0", "0", "0", "ARP / TCP / UDP / ICMP", "0", "DROP / ALLOW"],
+                rules: [],//[{ "ruleid": 3, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.4", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 0, "action": "DROP" }, { "ruleid": 2, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.3", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 2, "action": "DROP" }, { "ruleid": 1, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.2", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 3, "action": "DROP" }, { "ruleid": 0, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "10.0.0.1", "nw_dst": "*", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 4, "action": "DROP" }],
+            },
+            computed: {
+                rule_values: function () {
+                    let rv = [];
+                    for (let r of this.rules) {
+                        let v = [];
+                        for (let k of this.keys_recv) {
+                            v.push(r[k]);
+                        }
+                        rv.push(v);
+                    }
+                    let ind = this.sortby;
+                    if (this.sortby_order) {
+                        rv.sort((a, b) => a[ind] > b[ind] ? 1 : -1);
+                    } else {
+                        rv.sort((a, b) => b[ind] > a[ind] ? 1 : -1);
+                    }
+                    return rv;
+                },
+                server_address: function () {
+                    return "http://" + this.server_ip + ":" + this.server_port + "/wm/myfirewall/rules/json";
+                }
+            },
+            methods: {
+                sortbyrow: function (r) {
+                    if (r == this.sortby) {
+                        this.sortby_order = !this.sortby_order;
+                    } else {
+                        this.sortby = r;
+                    }
+                },
+                connect: function () {
+                    this.status = 'Connecting...';
+                    sessionStorage.setItem("server_ip", this.server_ip);
+                    sessionStorage.setItem("server_port", this.server_port);
+
+                    fetch(this.server_address, {
+                        method: "GET"
+                    }).then(response => {
+                        if (response.ok) {
+                            this.status = 'List updated';
+                            return response.json();
+                        }
+                        throw "failed to fetch";
+                    }).then(res => {
+                        this.rules = res;
+                    }).catch(() => {
+                        this.status = 'Connection failed';
+                    });
+                },
+                rule_add: function () {
+                    this.form = {};
+                    this.form_status = '';
+                    this.show_form = true;
+                },
+                rule_modify: function (id) {
+                    this.form = {};
+                    this.form_status = '';
+                    let rule = this.rule_values[id];
+                    for (let i = 0, j = this.keys_send.length; i < j; ++i) {
+                        this.form[this.keys_send[i]] = rule[i] == '*' ? '' : rule[i];
+                    }
+                    this.show_form = true;
+                },
+                rule_delete: function (id) {
+                    fetch(this.server_address, {
+                        method: "DELETE",
+                        body: JSON.stringify({ "ruleid": this.rule_values[id][0] })
+                    }).then(response => {
+                        if (response.ok) {
+                            return response.json();
+                        }
+                        throw "failed to delete";
+                    }).then((res) => {
+                        console.log(res);
+                        if (res.code == 1) {
+                            this.status = res.status;
+                            this.connect();
+                        } else {
+                            throw res.status;
+                        }
+                    }).catch((e) => {
+                        this.status = e;
+                        console.log(e);
+                    });
+                },
+                submit: function () {
+                    this.form_status = 'Sending rule to MyFirewall...';
+                    let rule = {};
+                    for (let k in this.form) {
+                        if (this.form[k] != false || this.form[k] == 0) {
+                            rule[k] = this.form[k];
+                        }
+                    }
+                    console.log(rule);
+                    fetch(this.server_address, {
+                        method: "POST",
+                        body: JSON.stringify(rule)
+                    }).then(response => {
+                        if (response.ok) {
+                            return response.json();
+                        }
+                        throw "failed to post";
+                    }).then((res) => {
+                        console.log(res);
+                        if (res.code == 1) {
+                            this.status = res.status;
+                            this.form_status = res.status;
+                            this.connect();
+                            this.show_form = false;
+                        } else {
+                            throw res.status;
+                        }
+                    }).catch((e) => {
+                        this.form_status = e;
+                        console.log(e);
+                    });
+                }
+            },
+            created: function () {
+                this.server_ip = sessionStorage.getItem('server_ip');
+                this.server_port = sessionStorage.getItem('server_port');
+            }
+        })
+    </script>
+</body>
+
+</html>
