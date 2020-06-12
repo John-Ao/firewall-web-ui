@@ -4,13 +4,15 @@
 <head>
     <title>防火墙控制器</title>
     <!-- <script src="https://unpkg.com/vue"></script> -->
+    <script src="Chart.min.js"></script>
     <script src="vue.js"></script>
+    <script src="chartjs-plugin-colorschemes.min.js"></script>
     <link rel="stylesheet" type="text/css" href="style.css">
 </head>
 
 <body>
     <div id="app">
-        <div class="modal" v-show="show_form">
+        <div class="modal" :class="{'modal-show':show_form}">
             <div class="modal-content">
                 <span class="close" @click="show_form=false">&times;</span>
                 <form>
@@ -39,7 +41,7 @@
                     <input v-model="server_ip" placeholder="IP">
                     <span>:</span>
                     <input v-model="server_port" placeholder="Port">
-                    <button @click="connect">Refresh rule list</button>
+                    <button @click="connect">Sync data</button>
                     <p class="status">Info: {{status}}</p>
                 </div>
                 <div>
@@ -75,6 +77,44 @@
                         </tbody>
                     </table>
                 </div>
+                <div style="margin-top:16px;">
+                    <div>
+                        <p style="display:inline-block">Flow limit:&nbsp;</p>
+                        <input v-model="flow_limit" placeholder="500">
+                        <p style="display:inline-block">&nbsp;Rule priority:&nbsp;</p>
+                        <input v-model="flow_priority" placeholder="999">
+                        <label>Enabled:</label>
+                        <input type="checkbox" v-model="flow_enable">
+                        <button @click="flow_update">确定</button>
+                        <p class="status">Info: {{flow_status}}</p>
+                    </div>
+                    <div style="padding-bottom:5px;">
+                        <input type="checkbox" v-model="auto_refresh">
+                        <label>Auto-refresh</label>
+                    </div>
+                    <div style="position:relative;width:50%;">
+                        <canvas id="plot"></canvas>
+                    </div>
+                    <div>
+                        <table style="width:50%;">
+                            <thead>
+                                <tr>
+                                    <th>IP</th>
+                                    <th>流量/pps</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="f of flow_cnt">
+                                    <td>{{f[0]}}</td>
+                                    <td>{{f[1]}}</td>
+                                </tr>
+                                <tr v-if="flow_cnt.length==0">
+                                    <td colspan="2">empty</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -95,6 +135,16 @@
                 form: {},
                 form_defaults: ["", "0", "0", "00:00:00:00:00:00:00:00", "00:00:00:00:00:00:00:00", "0.0.0.0", "0.0.0.0", "0", "0", "ARP / TCP / UDP / ICMP", "0", "DROP / ALLOW"],
                 rules: [],//[{ "ruleid": 3, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.4", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 0, "action": "DROP" }, { "ruleid": 2, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.3", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 2, "action": "DROP" }, { "ruleid": 1, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.2", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 3, "action": "DROP" }, { "ruleid": 0, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "10.0.0.1", "nw_dst": "*", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 4, "action": "DROP" }],
+                flow_cnt: [],
+                flow_limit: null,
+                flow_priority: null,
+                flow_enable: true,
+                flow_status: '',
+                auto_refresh: false,
+                flow_refresh_func: null,
+                flow_chart: null,
+                flow_chart_length: 12,
+                flow_chart_data: new Map(),
             },
             computed: {
                 rule_values: function () {
@@ -116,6 +166,9 @@
                 },
                 server_address: function () {
                     return "http://" + this.server_ip + ":" + this.server_port + "/wm/myfirewall/rules/json";
+                },
+                flow_address: function () {
+                    return "http://" + this.server_ip + ":" + this.server_port + "/wm/myfirewall/monitor/json";
                 }
             },
             methods: {
@@ -141,6 +194,22 @@
                         throw "failed to fetch";
                     }).then(res => {
                         this.rules = res;
+                    }).catch(() => {
+                        this.status = 'Connection failed';
+                    });
+
+                    fetch(this.flow_address, {
+                        method: "DELETE"
+                    }).then(response => {
+                        if (response.ok) {
+                            this.flow_status = 'Updated';
+                            return response.json();
+                        }
+                        throw "failed to fetch";
+                    }).then(res => {
+                        this.flow_limit = res.limit;
+                        this.flow_priority = res.priority;
+                        this.flow_enable = !res.stop;
                     }).catch(() => {
                         this.status = 'Connection failed';
                     });
@@ -212,11 +281,128 @@
                         this.form_status = e;
                         console.log(e);
                     });
+                },
+                flow_update: function () {
+                    this.flow_status = 'Sending rule to MyFirewall...';
+                    let rule = {
+                        limit: this.flow_limit,
+                        priority: this.flow_priority,
+                        stop: this.flow_enable ? 0 : 1
+                    };
+                    console.log(rule);
+                    fetch(this.flow_address, {
+                        method: "POST",
+                        body: JSON.stringify(rule)
+                    }).then(response => {
+                        if (response.ok) {
+                            return response.json();
+                        }
+                        throw "failed to post";
+                    }).then((res) => {
+                        console.log(res);
+                        if (res.code == 1) {
+                            this.flow_status = res.status;
+                            this.connect();
+                        } else {
+                            throw res.status;
+                        }
+                    }).catch((e) => {
+                        this.flow_status = e;
+                        console.log(e);
+                    });
+                },
+                flow_refresh: function () {
+                    if (this.auto_refresh) {
+                        fetch(this.flow_address, {
+                            method: "GET"
+                        }).then(response => {
+                            if (response.ok) {
+                                this.flow_status = 'Flow updated';
+                                return response.json();
+                            }
+                            throw "failed to fetch";
+                        }).then(res => {
+                            let flows = [];
+                            let map = this.flow_chart_data;
+                            for (let k in res) {
+                                flows.push([k, res[k]]);
+                                if (map.has(k)) {
+                                    let arr = map.get(k);
+                                    arr.push(res[k]);
+                                    if (arr.length > this.flow_chart_length) {
+                                        arr.shift();
+                                    }
+                                    map.set(k, arr);
+                                } else {
+                                    map.set(k, [res[k]]);
+                                }
+                            }
+                            this.flow_cnt = flows;
+                            let map_ = new Map([...map]);
+                            this.flow_chart.data.datasets.forEach((dataset) => {
+                                dataset.data = map.get(dataset.label);
+                                map_.delete(dataset.label);
+                            })
+                            for (let [k, v] of map_) {
+                                this.flow_chart.data.datasets.push({
+                                    label: k,
+                                    data: v,
+                                    fill: false,
+                                    lineTension: 0.1
+                                })
+                            }
+                            this.flow_chart.update({
+                                duration: 500,
+                                easing: 'linear'
+                            });
+
+                        }).catch(() => {
+                            this.status = 'Connection failed';
+                        });
+                    }
                 }
             },
-            created: function () {
+            mounted: function () {
                 this.server_ip = sessionStorage.getItem('server_ip');
                 this.server_port = sessionStorage.getItem('server_port');
+                this.flow_refresh_func = setInterval(this.flow_refresh, 500);
+                flow_chart_length = this.flow_chart_length
+                this.flow_chart = new Chart(document.getElementById('plot').getContext("2d"), {
+                    type: 'line',
+                    data: {
+                        labels: (function () {
+                            let l = [];
+                            for (let i = 0; i < flow_chart_length; ++i) {
+                                l.push('');
+                            }
+                            return l;
+                        })(),
+                        datasets: []
+                    },
+                    options: {
+                        title: {
+                            display: false
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top',
+                        },
+                        plugins: {
+                            colorschemes: {
+                                scheme: 'brewer.Paired12'
+                            }
+                        },
+                        scales: {
+                            yAxes: [{
+                                display: true,
+                                ticks: {
+                                    beginAtZero: true
+                                }
+                            }]
+                        }
+                    },
+
+                })
             }
         })
     </script>
