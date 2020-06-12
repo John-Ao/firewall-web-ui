@@ -6,11 +6,14 @@
     <!-- <script src="https://unpkg.com/vue"></script> -->
     <script src="vue.js"></script>
     <link rel="stylesheet" type="text/css" href="style.css">
+    <script src="https://code.highcharts.com.cn/highcharts/highcharts.js"></script>
+    <script src="https://code.highcharts.com.cn/highcharts/modules/exporting.js"></script>
+    <script src="https://img.hcharts.cn/highcharts-plugins/highcharts-zh_CN.js"></script>
 </head>
 
 <body>
     <div id="app">
-        <div class="modal" v-show="show_form">
+        <div class="modal" :class="{'model-show':show_form}">
             <div class="modal-content">
                 <span class="close" @click="show_form=false">&times;</span>
                 <form>
@@ -39,7 +42,7 @@
                     <input v-model="server_ip" placeholder="IP">
                     <span>:</span>
                     <input v-model="server_port" placeholder="Port">
-                    <button @click="connect">Refresh rule list</button>
+                    <button @click="connect">Sync data</button>
                     <p class="status">Info: {{status}}</p>
                 </div>
                 <div>
@@ -75,10 +78,54 @@
                         </tbody>
                     </table>
                 </div>
+                <div style="margin-top:16px;">
+                    <div>
+                        <p style="display:inline-block">Flow limit:&nbsp;</p>
+                        <input v-model="flow_limit" placeholder="500">
+                        <p style="display:inline-block">&nbsp;Rule priority:&nbsp;</p>
+                        <input v-model="flow_priority" placeholder="999">
+                        <label>Enabled:</label>
+                        <input type="checkbox" v-model="flow_enable">
+                        <button @click="flow_update">确定</button>
+                        <p class="status">Info: {{flow_status}}</p>
+                    </div>
+                    <div style="padding-bottom:5px;">
+                        <input type="checkbox" v-model="auto_refresh">
+                        <label>Auto-refresh</label>
+                    </div>
+                    <div>
+                        <table style="width:50%;">
+                            <thead>
+                                <tr>
+                                    <th>IP</th>
+                                    <th>流量/pps</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="f of flow_cnt">
+                                    <td>{{f[0]}}</td>
+                                    <td>{{f[1]}}</td>
+                                </tr>
+                                <tr v-if="flow_cnt.length==0">
+                                    <td colspan="2">empty</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="plot-container" style="max-width:50%;height:30%"></div>
+                    <div style="display:none;">
+                        <canvas id="plot"></canvas>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
     <script>
+        Highcharts.setOptions({
+            global: {
+                useUTC: false
+            }
+        });
         let app = new Vue({
             el: '#app',
             data: {
@@ -95,6 +142,14 @@
                 form: {},
                 form_defaults: ["", "0", "0", "00:00:00:00:00:00:00:00", "00:00:00:00:00:00:00:00", "0.0.0.0", "0.0.0.0", "0", "0", "ARP / TCP / UDP / ICMP", "0", "DROP / ALLOW"],
                 rules: [],//[{ "ruleid": 3, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.4", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 0, "action": "DROP" }, { "ruleid": 2, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.3", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 2, "action": "DROP" }, { "ruleid": 1, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "*", "nw_dst": "10.0.0.2", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 3, "action": "DROP" }, { "ruleid": 0, "dpid": "*", "in_port": "*", "dl_src": "*", "dl_dst": "*", "nw_src": "10.0.0.1", "nw_dst": "*", "tp_src": "*", "tp_dst": "*", "proto": "ICMP", "priority": 4, "action": "DROP" }],
+                flow_cnt: [],
+                flow_limit: null,
+                flow_priority: null,
+                flow_enable: true,
+                flow_status: '',
+                auto_refresh: false,
+                flow_refresh_func: null,
+                flow_chart: null,
             },
             computed: {
                 rule_values: function () {
@@ -116,6 +171,9 @@
                 },
                 server_address: function () {
                     return "http://" + this.server_ip + ":" + this.server_port + "/wm/myfirewall/rules/json";
+                },
+                flow_address: function () {
+                    return "http://" + this.server_ip + ":" + this.server_port + "/wm/myfirewall/monitor/json";
                 }
             },
             methods: {
@@ -141,6 +199,22 @@
                         throw "failed to fetch";
                     }).then(res => {
                         this.rules = res;
+                    }).catch(() => {
+                        this.status = 'Connection failed';
+                    });
+
+                    fetch(this.flow_address, {
+                        method: "DELETE"
+                    }).then(response => {
+                        if (response.ok) {
+                            this.flow_status = 'Updated';
+                            return response.json();
+                        }
+                        throw "failed to fetch";
+                    }).then(res => {
+                        this.flow_limit = res.limit;
+                        this.flow_priority = res.priority;
+                        this.flow_enable = !res.stop;
                     }).catch(() => {
                         this.status = 'Connection failed';
                     });
@@ -212,11 +286,112 @@
                         this.form_status = e;
                         console.log(e);
                     });
+                },
+                flow_update: function () {
+                    this.flow_status = 'Sending rule to MyFirewall...';
+                    let rule = {
+                        limit: this.flow_limit,
+                        priority: this.flow_priority,
+                        stop: !this.flow_enable
+                    };
+                    console.log(rule);
+                    fetch(this.flow_address, {
+                        method: "POST",
+                        body: JSON.stringify(rule)
+                    }).then(response => {
+                        if (response.ok) {
+                            return response.json();
+                        }
+                        throw "failed to post";
+                    }).then((res) => {
+                        console.log(res);
+                        if (res.code == 1) {
+                            this.flow_status = res.status;
+                            this.connect();
+                        } else {
+                            throw res.status;
+                        }
+                    }).catch((e) => {
+                        this.flow_status = e;
+                        console.log(e);
+                    });
+                },
+                flow_refresh: function () {
+                    if (this.auto_refresh) {
+                        fetch(this.flow_address, {
+                            method: "GET"
+                        }).then(response => {
+                            if (response.ok) {
+                                this.flow_status = 'Flow updated';
+                                return response.json();
+                            }
+                            throw "failed to fetch";
+                        }).then(res => {
+                            let flows = [];
+                            for (let k in res) {
+                                flows.push([k, res[k]]);
+                            }
+                            this.flow_cnt = flows;
+                        }).catch(() => {
+                            this.status = 'Connection failed';
+                        });
+                    }
                 }
             },
-            created: function () {
+            mounted: function () {
                 this.server_ip = sessionStorage.getItem('server_ip');
                 this.server_port = sessionStorage.getItem('server_port');
+                this.flow_refresh_func = setInterval(this.flow_refresh, 500);
+                this.flow_chart = Highcharts.chart('plot-container', {
+                    chart: {
+                        type: 'spline',
+                        marginRight: 10,
+                        events: {
+                            load: function () {
+                                var series = this.series[0],
+                                    chart = this;
+                                setInterval(function () {
+                                    var x = (new Date()).getTime(), // 当前时间
+                                        y = Math.random();          // 随机值
+                                    series.addPoint([x, y], true, true);
+                                }, 1000);
+                            }
+                        }
+                    },
+                    title: {
+                        text: '动态模拟实时数据'
+                    },
+                    xAxis: {
+                        type: 'datetime',
+                        tickPixelInterval: 150
+                    },
+                    yAxis: {
+                        title: {
+                            text: null
+                        }
+                    },
+                    tooltip: {
+                        formatter: function () {
+                            return '<b>' + this.series.name + '</b><br/>' +
+                                Highcharts.dateFormat('%Y-%m-%d %H:%M:%S', this.x) + '<br/>' +
+                                Highcharts.numberFormat(this.y, 2);
+                        }
+                    },
+                    legend: {
+                        enabled: false
+                    },
+                    series: [{
+                        name: '随机数据',
+                        data: (function () {
+                            let data = [],
+                                time = (new Date()).getTime();
+                            for (let i = -19; i <= 0; ++i) {
+                                data.push({ x: time + i * 1000, y: 0 });
+                            }
+                            return data;
+                        })()
+                    }]
+                });
             }
         })
     </script>
