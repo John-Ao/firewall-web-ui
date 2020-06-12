@@ -92,27 +92,29 @@
                         <input type="checkbox" v-model="auto_refresh">
                         <label>Auto-refresh</label>
                     </div>
-                    <div style="position:relative;width:50%;">
-                        <canvas id="plot"></canvas>
-                    </div>
                     <div>
-                        <table style="width:50%;">
-                            <thead>
-                                <tr>
-                                    <th>IP</th>
-                                    <th>流量/pps</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="f of flow_cnt">
-                                    <td>{{f[0]}}</td>
-                                    <td>{{f[1]}}</td>
-                                </tr>
-                                <tr v-if="flow_cnt.length==0">
-                                    <td colspan="2">empty</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div style="position:relative;width:50%;display:inline-block;vertical-align:top;">
+                            <canvas id="plot"></canvas>
+                        </div>
+                        <div style="position:relative;width:49%;display:inline-block;vertical-align:top;top:9px;">
+                            <table style="width:100%;">
+                                <thead>
+                                    <tr>
+                                        <th>IP</th>
+                                        <th>流量/pps</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="f of flow_cnt">
+                                        <td>{{f[0]}}</td>
+                                        <td>{{f[1]}}</td>
+                                    </tr>
+                                    <tr v-if="flow_cnt.length==0">
+                                        <td colspan="2">empty</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
